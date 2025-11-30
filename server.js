@@ -4,251 +4,304 @@ const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
-
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Root endpoint
+// Binance API Configuration
+const BINANCE_CONFIG = {
+  baseUrl: 'https://api.binance.com',
+  apiKey: process.env.BINANCE_API_KEY,
+  secretKey: process.env.BINANCE_SECRET_KEY
+};
+
+// Enhanced Binance API with ALL coins
+const binanceAPI = {
+  // Get ALL trading pairs
+  getAllPrices: async () => {
+    try {
+      const response = await axios.get(`${BINANCE_CONFIG.baseUrl}/api/v3/ticker/price`);
+      return response.data;
+    } catch (error) {
+      console.error('Binance API Error:', error.response?.data || error.message);
+      throw error;
+    }
+  },
+
+  // Get specific pairs with filtering
+  getPairsByQuote: async (quoteAsset) => {
+    const allPrices = await binanceAPI.getAllPrices();
+    return allPrices.filter(pair => pair.symbol.endsWith(quoteAsset));
+  },
+
+  // Get 24hr ticker for volume filtering
+  get24hrTickers: async () => {
+    try {
+      const response = await axios.get(`${BINANCE_CONFIG.baseUrl}/api/v3/ticker/24hr`);
+      return response.data;
+    } catch (error) {
+      console.error('Binance 24hr error:', error.message);
+      return [];
+    }
+  }
+};
+
+// Smart coin filtering
+const filterLiquidCoins = (pairs, tickers = []) => {
+  return pairs.filter(pair => {
+    const coin = pair.symbol.replace(/USDT|BUSD|BTC|ETH$/g, '');
+    
+    // Exclude stablecoins and leveraged tokens
+    const excludedCoins = ['USDC', 'USDP', 'TUSD', 'DAI', 'EUR', 'GBP', 'TRY'];
+    const excludedPatterns = [/UPUSDT$/, /DOWNUSDT$/, /BULLUSDT$/, /BEARUSDT$/, /^BUSD/];
+    
+    const isExcluded = excludedCoins.includes(coin) || 
+                      excludedPatterns.some(pattern => pattern.test(pair.symbol));
+    
+    // Filter by volume if tickers available
+    if (tickers.length > 0) {
+      const ticker = tickers.find(t => t.symbol === pair.symbol);
+      if (ticker) {
+        const volume = parseFloat(ticker.quoteVolume);
+        return !isExcluded && volume > 100000; // $100k+ daily volume
+      }
+    }
+    
+    return !isExcluded;
+  });
+};
+
+// Triangular arbitrage calculator
+const calculateTriangularPath = (price1, price2, price3, path, coin) => {
+  const theoreticalOutput = (1 / price1) * (1 / price2) * price3;
+  const profitPercentage = ((theoreticalOutput - 1) * 100);
+  
+  return {
+    type: 'TRIANGULAR',
+    path: path,
+    coin: coin,
+    percentage: parseFloat(profitPercentage.toFixed(3)),
+    theoreticalOutput: theoreticalOutput.toFixed(6),
+    buyPrice: price1,
+    sellPrice: price3,
+    steps: [
+      `Start with 1 USDT`,
+      `Buy ${(1 / price1).toFixed(8)} BTC`,
+      `Buy ${((1 / price1) * (1 / price2)).toFixed(8)} ${coin}`,
+      `Sell for ${theoreticalOutput.toFixed(6)} USDT`
+    ],
+    profit: `$${(theoreticalOutput - 1).toFixed(6)} per USDT cycle`,
+    timestamp: new Date().toISOString()
+  };
+};
+
+// MAIN: Find ALL triangular arbitrage opportunities
+const findAllTriangularArbitrage = async (strategy = 'quick') => {
+  try {
+    console.log(`🔍 Scanning ALL coins for triangular arbitrage (${strategy})...`);
+    
+    const [allPrices, tickers24hr] = await Promise.all([
+      binanceAPI.getAllPrices(),
+      binanceAPI.get24hrTickers()
+    ]);
+
+    // Get filtered pairs
+    const usdtPairs = filterLiquidCoins(
+      allPrices.filter(p => p.symbol.endsWith('USDT')),
+      tickers24hr
+    );
+    
+    const btcPairs = filterLiquidCoins(
+      allPrices.filter(p => p.symbol.endsWith('BTC') && !p.symbol.startsWith('BTC')),
+      tickers24hr
+    );
+
+    const busdPairs = filterLiquidCoins(
+      allPrices.filter(p => p.symbol.endsWith('BUSD')),
+      tickers24hr
+    );
+
+    const opportunities = [];
+    
+    // Strategy 1: USDT → BTC → ALT → USDT (Most Profitable)
+    console.log('💰 Scanning USDT → BTC → ALT → USDT paths...');
+    
+    const btcUsdt = usdtPairs.find(p => p.symbol === 'BTCUSDT');
+    if (!btcUsdt) throw new Error('BTC/USDT pair not found');
+
+    const btcPrice = parseFloat(btcUsdt.price);
+    
+    // Limit scan based on strategy
+    const scanLimit = strategy === 'quick' ? 50 : strategy === 'medium' ? 100 : btcPairs.length;
+    
+    for (const btcPair of btcPairs.slice(0, scanLimit)) {
+      const altCoin = btcPair.symbol.replace('BTC', '');
+      const usdtPair = usdtPairs.find(p => p.symbol === `${altCoin}USDT`);
+      
+      if (usdtPair) {
+        const pathProfit = calculateTriangularPath(
+          btcPrice,
+          parseFloat(btcPair.price),
+          parseFloat(usdtPair.price),
+          `USDT → BTC → ${altCoin} → USDT`,
+          altCoin
+        );
+        
+        // Adjust threshold based on strategy
+        const threshold = strategy === 'quick' ? 0.3 : 0.2;
+        if (pathProfit.percentage > threshold) {
+          opportunities.push(pathProfit);
+        }
+      }
+    }
+
+    // Strategy 2: USDT → BUSD → ALT → USDT
+    console.log('💰 Scanning USDT → BUSD → ALT → USDT paths...');
+    
+    for (const busdPair of busdPairs.slice(0, scanLimit)) {
+      const altCoin = busdPair.symbol.replace('BUSD', '');
+      const usdtPair = usdtPairs.find(p => p.symbol === `${altCoin}USDT`);
+      
+      if (usdtPair) {
+        const busdPrice = parseFloat(busdPair.price);
+        const usdtPrice = parseFloat(usdtPair.price);
+        const difference = Math.abs(usdtPrice - busdPrice);
+        const percentage = (difference / Math.min(usdtPrice, busdPrice)) * 100;
+        
+        if (percentage > 0.15) {
+          opportunities.push({
+            type: 'CROSS_PAIR',
+            path: `${altCoin}/USDT ↔ ${altCoin}/BUSD`,
+            coin: altCoin,
+            percentage: parseFloat(percentage.toFixed(3)),
+            buyPrice: Math.min(usdtPrice, busdPrice),
+            sellPrice: Math.max(usdtPrice, busdPrice),
+            profit: `$${difference.toFixed(4)} per ${altCoin}`,
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    }
+
+    console.log(`✅ Found ${opportunities.length} opportunities`);
+    
+    // Sort by profit percentage (highest first)
+    return opportunities.sort((a, b) => b.percentage - a.percentage);
+    
+  } catch (error) {
+    console.error('❌ Triangular arbitrage scan failed:', error);
+    return [];
+  }
+};
+
+// API Endpoints
 app.get('/', (req, res) => {
   res.json({ 
-    message: '🚀 Arbitrage Backend Server Running!',
-    version: '1.0.0',
+    message: '🚀 Binance All-Coins Arbitrage Scanner',
+    version: '2.0',
     endpoints: {
       prices: '/api/prices',
-      arbitrage: '/api/arbitrage',
-      exchanges: '/api/exchanges'
+      triangular: '/api/arbitrage/triangular?strategy=quick|medium|full',
+      crossPair: '/api/arbitrage/cross-pair'
     }
   });
 });
 
-// Get prices from multiple exchanges - UPDATED WITH CURRENT PRICES
+// Get all prices
 app.get('/api/prices', async (req, res) => {
   try {
-    console.log('📈 Fetching real cryptocurrency prices...');
+    const allPrices = await binanceAPI.getAllPrices();
+    const filteredPrices = filterLiquidCoins(allPrices);
     
-    let btcPrice, ethPrice, solPrice, adaPrice;
-    let dataSource = 'coinGecko';
-    
-    // TRY COINGECKO FIRST
-    try {
-      const coinGeckoResponse = await axios.get(
-        'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,cardano&vs_currencies=usd',
-        { 
-          timeout: 10000,
-          headers: {
-            'User-Agent': 'ArbitrageApp/1.0'
-          }
-        }
-      );
-      
-      if (coinGeckoResponse.data.bitcoin && coinGeckoResponse.data.ethereum) {
-        btcPrice = coinGeckoResponse.data.bitcoin.usd;
-        ethPrice = coinGeckoResponse.data.ethereum.usd;
-        solPrice = coinGeckoResponse.data.solana.usd;
-        adaPrice = coinGeckoResponse.data.cardano.usd;
-        
-        console.log('✅ Real prices from CoinGecko:', {
-          BTC: btcPrice,
-          ETH: ethPrice,
-          SOL: solPrice,
-          ADA: adaPrice
-        });
-      } else {
-        throw new Error('Incomplete data from CoinGecko');
-      }
-      
-    } catch (coingeckoError) {
-      console.log('🔄 CoinGecko failed, using current market prices...');
-      dataSource = 'current_market';
-      
-      // CURRENT MARKET PRICES (Dec 2024)
-      btcPrice = 43500 + (Math.random() * 1000 - 500);  // $43,000-$44,000 range
-      ethPrice = 2980 + (Math.random() * 100 - 50);     // $2,930-$3,030 range (ACTUAL!)
-      solPrice = 135 + (Math.random() * 10 - 5);        // $130-$140 range (ACTUAL!)
-      adaPrice = 0.48 + (Math.random() * 0.02 - 0.01);  // $0.47-$0.49 range
-      
-      console.log('💰 Current market prices:', {
-        BTC: btcPrice,
-        ETH: ethPrice, 
-        SOL: solPrice,
-        ADA: adaPrice
-      });
-    }
-
-    // Generate realistic exchange variations
-    const prices = {
-      'BTC/USDT': {
-        binance: (btcPrice * 0.998).toFixed(2),
-        coinbase: (btcPrice * 1.001).toFixed(2),
-        kraken: (btcPrice * 0.999).toFixed(2),
-        bybit: (btcPrice * 1.002).toFixed(2)
-      },
-      'ETH/USDT': {
-        binance: (ethPrice * 0.998).toFixed(2),
-        coinbase: (ethPrice * 1.001).toFixed(2),
-        kraken: (ethPrice * 0.999).toFixed(2),
-        bybit: (ethPrice * 1.002).toFixed(2)
-      },
-      'SOL/USDT': {
-        binance: (solPrice * 0.998).toFixed(2),
-        coinbase: (solPrice * 1.001).toFixed(2),
-        kraken: (solPrice * 0.999).toFixed(2),
-        bybit: (solPrice * 1.002).toFixed(2)
-      },
-      'ADA/USDT': {
-        binance: (adaPrice * 0.998).toFixed(4),
-        coinbase: (adaPrice * 1.001).toFixed(4),
-        kraken: (adaPrice * 0.999).toFixed(4),
-        bybit: (adaPrice * 1.002).toFixed(4)
-      }
-    };
-
-    console.log('✅ Generated exchange prices');
     res.json({
-      success: dataSource === 'coinGecko',
-      prices: prices,
-      timestamp: new Date().toISOString(),
-      dataSource: dataSource,
-      message: dataSource === 'coinGecko' ? 'Live prices from CoinGecko' : 'Current market prices (CoinGecko rate limited)'
+      success: true,
+      count: filteredPrices.length,
+      prices: filteredPrices.slice(0, 100), // Return top 100
+      timestamp: new Date().toISOString()
     });
-
   } catch (error) {
-    console.error('❌ All price sources failed:', error.message);
-    
-    // REALISTIC CURRENT MARKET PRICES (Dec 2024)
-    const fallbackPrices = {
-      'BTC/USDT': {
-        binance: '43450.75',
-        coinbase: '43485.20',
-        kraken: '43460.30',
-        bybit: '43495.80'
-      },
-      'ETH/USDT': {
-        binance: '2985.60',    // CURRENT ETH PRICE ~$2,985
-        coinbase: '2992.45',   // CURRENT ETH PRICE ~$2,992
-        kraken: '2987.80',     // CURRENT ETH PRICE ~$2,987
-        bybit: '2990.25'       // CURRENT ETH PRICE ~$2,990
-      },
-      'SOL/USDT': {
-        binance: '134.45',     // CURRENT SOL PRICE ~$134
-        coinbase: '135.20',    // CURRENT SOL PRICE ~$135
-        kraken: '134.75',      // CURRENT SOL PRICE ~$134
-        bybit: '135.05'        // CURRENT SOL PRICE ~$135
-      },
-      'ADA/USDT': {
-        binance: '0.4785',
-        coinbase: '0.4820',
-        kraken: '0.4790',
-        bybit: '0.4815'
-      }
-    };
-
-    console.log('🔄 Using current market fallback prices');
-    res.json({
+    res.status(500).json({
       success: false,
-      prices: fallbackPrices,
-      timestamp: new Date().toISOString(),
-      error: 'Using current market prices: ' + error.message,
-      dataSource: 'current_market_fallback'
+      error: error.message
     });
   }
 });
 
-// Get arbitrage opportunities - FIXED VERSION
-app.get('/api/arbitrage', async (req, res) => {
+// Triangular arbitrage endpoint
+app.get('/api/arbitrage/triangular', async (req, res) => {
   try {
-    console.log('💰 Calculating arbitrage opportunities...');
+    const strategy = req.query.strategy || 'quick';
+    const opportunities = await findAllTriangularArbitrage(strategy);
     
-    // Use consistent price data (same as prices endpoint fallback)
-    const prices = {
-      'BTC/USDT': {
-        binance: '43450.75',
-        coinbase: '43485.20',
-        kraken: '43460.30',
-        bybit: '43495.80'
-      },
-      'ETH/USDT': {
-        binance: '2985.60',    // UPDATED TO CURRENT PRICE
-        coinbase: '2992.45',   // UPDATED TO CURRENT PRICE
-        kraken: '2987.80',     // UPDATED TO CURRENT PRICE
-        bybit: '2990.25'       // UPDATED TO CURRENT PRICE
-      },
-      'SOL/USDT': {
-        binance: '134.45',     // UPDATED TO CURRENT PRICE
-        coinbase: '135.20',    // UPDATED TO CURRENT PRICE
-        kraken: '134.75',      // UPDATED TO CURRENT PRICE
-        bybit: '135.05'        // UPDATED TO CURRENT PRICE
-      },
-      'ADA/USDT': {
-        binance: '0.4785',
-        coinbase: '0.4820',
-        kraken: '0.4790',
-        bybit: '0.4815'
-      }
-    };
-    
-    // Calculate arbitrage opportunities
-    const arbitrageOpportunities = {};
-    
-    Object.keys(prices).forEach(pair => {
-      const exchanges = prices[pair];
-      const exchangeNames = Object.keys(exchanges);
-      
-      let bestBuy = { exchange: '', price: Infinity };
-      let bestSell = { exchange: '', price: -Infinity };
-      
-      // Find best buy (lowest price) and best sell (highest price)
-      exchangeNames.forEach(exchange => {
-        const price = parseFloat(exchanges[exchange]);
-        if (price < bestBuy.price) {
-          bestBuy = { exchange, price };
-        }
-        if (price > bestSell.price) {
-          bestSell = { exchange, price };
-        }
-      });
-      
-      // Calculate profit percentage
-      const profitPercentage = ((bestSell.price - bestBuy.price) / bestBuy.price * 100);
-      
-      arbitrageOpportunities[pair] = {
-        buy: bestBuy,
-        sell: bestSell,
-        profitPercentage: profitPercentage.toFixed(2),
-        opportunity: profitPercentage > 0.1 ? 'ARBITRAGE AVAILABLE' : 'No significant arbitrage'
-      };
-    });
-    
-    console.log('✅ Arbitrage opportunities calculated');
     res.json({
       success: true,
-      arbitrage: arbitrageOpportunities,
+      strategy: strategy,
+      count: opportunities.length,
+      opportunities: opportunities,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Cross-pair arbitrage endpoint
+app.get('/api/arbitrage/cross-pair', async (req, res) => {
+  try {
+    const [usdtPairs, busdPairs] = await Promise.all([
+      binanceAPI.getPairsByQuote('USDT'),
+      binanceAPI.getPairsByQuote('BUSD')
+    ]);
+
+    const opportunities = [];
+    
+    for (const usdtPair of usdtPairs.slice(0, 100)) {
+      const coin = usdtPair.symbol.replace('USDT', '');
+      const busdPair = busdPairs.find(p => p.symbol === `${coin}BUSD`);
+      
+      if (busdPair) {
+        const usdtPrice = parseFloat(usdtPair.price);
+        const busdPrice = parseFloat(busdPair.price);
+        const difference = Math.abs(usdtPrice - busdPrice);
+        const percentage = (difference / Math.min(usdtPrice, busdPrice)) * 100;
+        
+        if (percentage > 0.1) {
+          opportunities.push({
+            coin: coin,
+            buyOn: usdtPrice < busdPrice ? 'USDT' : 'BUSD',
+            sellOn: usdtPrice < busdPrice ? 'BUSD' : 'USDT',
+            buyPrice: Math.min(usdtPrice, busdPrice),
+            sellPrice: Math.max(usdtPrice, busdPrice),
+            percentage: parseFloat(percentage.toFixed(3)),
+            profit: `$${difference.toFixed(6)} per ${coin}`,
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    }
+    
+    res.json({
+      success: true,
+      count: opportunities.length,
+      opportunities: opportunities.sort((a, b) => b.percentage - a.percentage),
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Error calculating arbitrage:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to calculate arbitrage opportunities: ' + error.message
+      error: error.message
     });
   }
 });
 
-// Get exchange list
-app.get('/api/exchanges', (req, res) => {
-  res.json({
-    exchanges: ['binance', 'coinbase', 'kraken', 'bybit'],
-    supportedPairs: ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'ADA/USDT']
-  });
-});
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📊 Prices endpoint: http://localhost:${PORT}/api/prices`);
-  console.log(`💡 Arbitrage endpoint: http://localhost:${PORT}/api/arbitrage`);
+  console.log(`🚀 All-Coins Arbitrage Scanner running on port ${PORT}`);
+  console.log(`🔍 Triangular: http://localhost:${PORT}/api/arbitrage/triangular`);
+  console.log(`🔄 Cross-Pair: http://localhost:${PORT}/api/arbitrage/cross-pair`);
 });
 
 module.exports = app;
