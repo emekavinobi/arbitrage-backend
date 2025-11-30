@@ -243,7 +243,8 @@ app.get('/', (req, res) => {
     endpoints: {
       prices: '/api/prices',
       triangular: '/api/arbitrage/triangular?strategy=quick|medium|full',
-      crossPair: '/api/arbitrage/cross-pair'
+      crossPair: '/api/arbitrage/cross-pair',
+      test: '/api/arbitrage/test'
     }
   });
 });
@@ -257,7 +258,7 @@ app.get('/api/prices', async (req, res) => {
     res.json({
       success: true,
       count: filteredPrices.length,
-      prices: filteredPrices.slice(0, 100), // Return top 100
+      prices: filteredPrices.slice(0, 100),
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -339,7 +340,7 @@ app.get('/api/arbitrage/cross-pair', async (req, res) => {
   }
 });
 
-// TEMPORARY TEST ENDPOINT - Add guaranteed opportunities
+// TEST ENDPOINT - Guaranteed opportunities
 app.get('/api/arbitrage/test', async (req, res) => {
   try {
     const testOpportunities = [
@@ -406,6 +407,7 @@ app.listen(PORT, () => {
   console.log(`🚀 All-Coins Arbitrage Scanner running on port ${PORT}`);
   console.log(`🔍 Triangular: http://localhost:${PORT}/api/arbitrage/triangular`);
   console.log(`🔄 Cross-Pair: http://localhost:${PORT}/api/arbitrage/cross-pair`);
+  console.log(`🧪 Test Data: http://localhost:${PORT}/api/arbitrage/test`);
 });
 
 module.exports = app;
