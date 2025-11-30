@@ -94,7 +94,7 @@ const calculateTriangularPath = (price1, price2, price3, path, coin) => {
   };
 };
 
-// MAIN: Find ALL triangular arbitrage opportunities
+// ENHANCED: Better triangular arbitrage detection
 const findAllTriangularArbitrage = async (strategy = 'quick') => {
   try {
     console.log(`🔍 Scanning ALL coins for triangular arbitrage (${strategy})...`);
@@ -104,36 +104,30 @@ const findAllTriangularArbitrage = async (strategy = 'quick') => {
       binanceAPI.get24hrTickers()
     ]);
 
-    // Get filtered pairs
-    const usdtPairs = filterLiquidCoins(
-      allPrices.filter(p => p.symbol.endsWith('USDT')),
-      tickers24hr
-    );
-    
-    const btcPairs = filterLiquidCoins(
-      allPrices.filter(p => p.symbol.endsWith('BTC') && !p.symbol.startsWith('BTC')),
-      tickers24hr
-    );
-
-    const busdPairs = filterLiquidCoins(
-      allPrices.filter(p => p.symbol.endsWith('BUSD')),
-      tickers24hr
-    );
+    // Get ALL trading pairs (not just filtered)
+    const usdtPairs = allPrices.filter(p => p.symbol.endsWith('USDT'));
+    const btcPairs = allPrices.filter(p => p.symbol.endsWith('BTC') && !p.symbol.startsWith('BTC'));
+    const ethPairs = allPrices.filter(p => p.symbol.endsWith('ETH') && !p.symbol.startsWith('ETH'));
+    const busdPairs = allPrices.filter(p => p.symbol.endsWith('BUSD'));
 
     const opportunities = [];
     
-    // Strategy 1: USDT → BTC → ALT → USDT (Most Profitable)
-    console.log('💰 Scanning USDT → BTC → ALT → USDT paths...');
-    
+    // Get base prices
     const btcUsdt = usdtPairs.find(p => p.symbol === 'BTCUSDT');
-    if (!btcUsdt) throw new Error('BTC/USDT pair not found');
+    const ethUsdt = usdtPairs.find(p => p.symbol === 'ETHUSDT');
+    const btcEth = allPrices.find(p => p.symbol === 'ETHBTC');
+    
+    if (!btcUsdt || !ethUsdt) {
+      throw new Error('Base pairs not found');
+    }
 
     const btcPrice = parseFloat(btcUsdt.price);
-    
-    // Limit scan based on strategy
-    const scanLimit = strategy === 'quick' ? 50 : strategy === 'medium' ? 100 : btcPairs.length;
-    
-    for (const btcPair of btcPairs.slice(0, scanLimit)) {
+    const ethPrice = parseFloat(ethUsdt.price);
+    const btcEthPrice = btcEth ? parseFloat(btcEth.price) : ethPrice / btcPrice;
+
+    // Strategy 1: USDT → BTC → ALT → USDT
+    console.log('💰 Scanning USDT → BTC → ALT → USDT paths...');
+    for (const btcPair of btcPairs.slice(0, 100)) {
       const altCoin = btcPair.symbol.replace('BTC', '');
       const usdtPair = usdtPairs.find(p => p.symbol === `${altCoin}USDT`);
       
@@ -146,45 +140,93 @@ const findAllTriangularArbitrage = async (strategy = 'quick') => {
           altCoin
         );
         
-        // Adjust threshold based on strategy
-        const threshold = strategy === 'quick' ? 0.3 : 0.2;
-        if (pathProfit.percentage > threshold) {
+        // LOWER threshold to 0.1% for testing
+        if (pathProfit.percentage > 0.1) {
           opportunities.push(pathProfit);
         }
       }
     }
 
-    // Strategy 2: USDT → BUSD → ALT → USDT
-    console.log('💰 Scanning USDT → BUSD → ALT → USDT paths...');
-    
-    for (const busdPair of busdPairs.slice(0, scanLimit)) {
-      const altCoin = busdPair.symbol.replace('BUSD', '');
+    // Strategy 2: USDT → ETH → ALT → USDT
+    console.log('💰 Scanning USDT → ETH → ALT → USDT paths...');
+    for (const ethPair of ethPairs.slice(0, 50)) {
+      const altCoin = ethPair.symbol.replace('ETH', '');
       const usdtPair = usdtPairs.find(p => p.symbol === `${altCoin}USDT`);
       
       if (usdtPair) {
-        const busdPrice = parseFloat(busdPair.price);
-        const usdtPrice = parseFloat(usdtPair.price);
-        const difference = Math.abs(usdtPrice - busdPrice);
-        const percentage = (difference / Math.min(usdtPrice, busdPrice)) * 100;
+        const pathProfit = calculateTriangularPath(
+          ethPrice,
+          parseFloat(ethPair.price),
+          parseFloat(usdtPair.price),
+          `USDT → ETH → ${altCoin} → USDT`,
+          altCoin
+        );
         
-        if (percentage > 0.15) {
+        if (pathProfit.percentage > 0.1) {
+          opportunities.push(pathProfit);
+        }
+      }
+    }
+
+    // Strategy 3: BTC → ETH → ALT → BTC (Different base)
+    console.log('💰 Scanning BTC → ETH → ALT → BTC paths...');
+    for (const ethPair of ethPairs.slice(0, 30)) {
+      const altCoin = ethPair.symbol.replace('ETH', '');
+      const btcPair = btcPairs.find(p => p.symbol === `${altCoin}BTC`);
+      
+      if (btcPair && btcEthPrice) {
+        // Start with 1 BTC, buy ETH, buy ALT, sell ALT for BTC
+        const ethAmount = 1 / btcEthPrice; // 1 BTC buys this much ETH
+        const altAmount = ethAmount / parseFloat(ethPair.price); // ETH buys this much ALT
+        const finalBtc = altAmount * parseFloat(btcPair.price); // ALT sells for this much BTC
+        
+        const profitPercentage = ((finalBtc - 1) * 100);
+        
+        if (profitPercentage > 0.1) {
           opportunities.push({
-            type: 'CROSS_PAIR',
-            path: `${altCoin}/USDT ↔ ${altCoin}/BUSD`,
+            type: 'TRIANGULAR',
+            path: `BTC → ETH → ${altCoin} → BTC`,
             coin: altCoin,
-            percentage: parseFloat(percentage.toFixed(3)),
-            buyPrice: Math.min(usdtPrice, busdPrice),
-            sellPrice: Math.max(usdtPrice, busdPrice),
-            profit: `$${difference.toFixed(4)} per ${altCoin}`,
+            percentage: parseFloat(profitPercentage.toFixed(3)),
+            theoreticalOutput: finalBtc.toFixed(6),
+            profit: `${(finalBtc - 1).toFixed(6)} BTC per cycle`,
             timestamp: new Date().toISOString()
           });
         }
       }
     }
 
-    console.log(`✅ Found ${opportunities.length} opportunities`);
+    // Strategy 4: USDT → ALT1 → ALT2 → USDT (Direct between alts)
+    console.log('💰 Scanning USDT → ALT1 → ALT2 → USDT paths...');
+    const topAltcoins = ['ADA', 'SOL', 'DOT', 'MATIC', 'AVAX', 'LINK', 'UNI', 'ATOM'];
     
-    // Sort by profit percentage (highest first)
+    for (let i = 0; i < topAltcoins.length; i++) {
+      for (let j = i + 1; j < topAltcoins.length; j++) {
+        const alt1 = topAltcoins[i];
+        const alt2 = topAltcoins[j];
+        
+        const alt1Usdt = usdtPairs.find(p => p.symbol === `${alt1}USDT`);
+        const alt2Usdt = usdtPairs.find(p => p.symbol === `${alt2}USDT`);
+        const alt1Alt2 = allPrices.find(p => p.symbol === `${alt2}${alt1}`);
+        
+        if (alt1Usdt && alt2Usdt && alt1Alt2) {
+          const pathProfit = calculateTriangularPath(
+            parseFloat(alt1Usdt.price),
+            parseFloat(alt1Alt2.price),
+            parseFloat(alt2Usdt.price),
+            `USDT → ${alt1} → ${alt2} → USDT`,
+            `${alt1}/${alt2}`
+          );
+          
+          if (pathProfit.percentage > 0.1) {
+            opportunities.push(pathProfit);
+          }
+        }
+      }
+    }
+
+    console.log(`✅ Found ${opportunities.length} triangular opportunities`);
+    
     return opportunities.sort((a, b) => b.percentage - a.percentage);
     
   } catch (error) {
