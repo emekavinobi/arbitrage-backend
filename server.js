@@ -25,11 +25,6 @@ app.get('/', (req, res) => {
 // Get prices from multiple exchanges
 app.get('/api/prices', async (req, res) => {
   try {
-    console.log('📈 Fetching real prices from exchanges...');
-    
-// Get prices from multiple exchanges
-app.get('/api/prices', async (req, res) => {
-  try {
     console.log('📈 Fetching cryptocurrency prices from CoinGecko...');
     
     // Use CoinGecko API (free, no rate limiting issues)
@@ -125,5 +120,74 @@ app.get('/api/prices', async (req, res) => {
     });
   }
 });
+
+// Get arbitrage opportunities
+app.get('/api/arbitrage', async (req, res) => {
+  try {
+    // First get the current prices
+    const pricesResponse = await axios.get(`${process.env.BACKEND_URL}/api/prices`);
+    const prices = pricesResponse.data.prices;
     
+    // Calculate arbitrage opportunities
+    const arbitrageOpportunities = {};
+    
+    Object.keys(prices).forEach(pair => {
+      const exchanges = prices[pair];
+      const exchangeNames = Object.keys(exchanges);
+      
+      let bestBuy = { exchange: '', price: Infinity };
+      let bestSell = { exchange: '', price: -Infinity };
+      
+      // Find best buy (lowest price) and best sell (highest price)
+      exchangeNames.forEach(exchange => {
+        const price = parseFloat(exchanges[exchange]);
+        if (price < bestBuy.price) {
+          bestBuy = { exchange, price };
+        }
+        if (price > bestSell.price) {
+          bestSell = { exchange, price };
+        }
+      });
+      
+      // Calculate profit percentage
+      const profitPercentage = ((bestSell.price - bestBuy.price) / bestBuy.price * 100);
+      
+      arbitrageOpportunities[pair] = {
+        buy: bestBuy,
+        sell: bestSell,
+        profitPercentage: profitPercentage.toFixed(2),
+        opportunity: profitPercentage > 0.1 ? 'ARBITRAGE AVAILABLE' : 'No significant arbitrage'
+      };
+    });
+    
+    res.json({
+      success: true,
+      arbitrage: arbitrageOpportunities,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error calculating arbitrage:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to calculate arbitrage opportunities'
+    });
+  }
+});
+
+// Get exchange list
+app.get('/api/exchanges', (req, res) => {
+  res.json({
+    exchanges: ['binance', 'coinbase', 'kraken', 'bybit'],
+    supportedPairs: ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'ADA/USDT']
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📊 Prices endpoint: http://localhost:${PORT}/api/prices`);
+  console.log(`💡 Arbitrage endpoint: http://localhost:${PORT}/api/arbitrage`);
+});
+
 module.exports = app;
