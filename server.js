@@ -339,6 +339,68 @@ app.get('/api/arbitrage/cross-pair', async (req, res) => {
   }
 });
 
+// TEMPORARY TEST ENDPOINT - Add guaranteed opportunities
+app.get('/api/arbitrage/test', async (req, res) => {
+  try {
+    const testOpportunities = [
+      {
+        type: 'TRIANGULAR',
+        path: 'USDT → BTC → DOGE → USDT',
+        coin: 'DOGE',
+        percentage: 0.45,
+        theoreticalOutput: '1.004500',
+        profit: '$0.004500 per USDT cycle',
+        steps: [
+          'Start with 1 USDT',
+          'Buy 0.00001102 BTC',
+          'Buy 90.524 DOGE for your BTC',
+          'Sell for 1.004500 USDT for your DOGE'
+        ],
+        timestamp: new Date().toISOString()
+      },
+      {
+        type: 'TRIANGULAR', 
+        path: 'USDT → ETH → MATIC → USDT',
+        coin: 'MATIC',
+        percentage: 0.32,
+        theoreticalOutput: '1.003200',
+        profit: '$0.003200 per USDT cycle',
+        steps: [
+          'Start with 1 USDT',
+          'Buy 0.000334 ETH',
+          'Buy 8.924 MATIC for your ETH',
+          'Sell for 1.003200 USDT for your MATIC'
+        ],
+        timestamp: new Date().toISOString()
+      },
+      {
+        type: 'CROSS_PAIR',
+        path: 'ADA/USDT ↔ ADA/BUSD',
+        coin: 'ADA',
+        percentage: 0.18,
+        buyPrice: 0.4785,
+        sellPrice: 0.4794,
+        profit: '$0.0009 per ADA',
+        timestamp: new Date().toISOString()
+      }
+    ];
+    
+    res.json({
+      success: true,
+      count: testOpportunities.length,
+      opportunities: testOpportunities,
+      message: 'TEST DATA - Real scanning shows 0 when market is efficient',
+      note: 'This proves your app can display opportunities when they exist',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 All-Coins Arbitrage Scanner running on port ${PORT}`);
